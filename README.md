@@ -153,7 +153,7 @@ docker compose logs -f claude-agent                      # 观察日志
 
 ### 1. Cursor / Cline / Roo Code
 - **Base URL**：`http://127.0.0.1:5055/v1`
-- **API Key**：`sk-claude`（网关未配置鉴权时任意值即可）
+- **API Key**：网关未配置鉴权时任意值即可；若已配置 `CLAUDE_API_KEY`/`GATEWAY_API_KEY`（或 appsettings `Gateway:ApiKey`），需填入**同一个 key**（如 `xxx`）。
 - **Model ID**：`claude-haiku-4-5` / `claude-sonnet-4-5` 等
 
 ### 2. 官方 .NET C# OpenAI SDK (NuGet: OpenAI 2.x)

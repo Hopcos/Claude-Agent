@@ -53,6 +53,15 @@ var builderSvc = app.Services.GetRequiredService<AnthropicRequestBuilder>();
 var mapper = app.Services.GetRequiredService<AnthropicToOpenAiMapper>();
 var registry = app.Services.GetRequiredService<ProviderRegistry>();
 
+// 兜底日志：任何未被请求处理链路捕获的异常都记录下来，避免进程静默退出后无从排查
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    logger.LogError(e.ExceptionObject as Exception, "FATAL unhandled AppDomain exception");
+TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    logger.LogError(e.Exception, "Unobserved task exception");
+    e.SetObserved();
+};
+
 // 可选：网关 API Key 鉴权（配置 CLAUDE_API_KEY / GATEWAY_API_KEY 后生效）
 if (!string.IsNullOrEmpty(settings.ApiKey))
 {
@@ -143,87 +152,100 @@ app.MapPost("/v1/chat/completions", async (HttpContext ctx, ChatCompletionReques
                 async (Stream body) =>
                 {
                     await using var writer = new StreamWriter(body, leaveOpen: true);
-                    var wroteAny = false;
                     try
                     {
-                        var streamMapper = new AnthropicToOpenAiMapper.StreamMapper(chunkId, created, model);
-                        await foreach (var evt in provider.GenerateStreamAsync(model, anthropicReq!, ct))
+                        var wroteAny = false;
+                        try
                         {
-                            var mapped = streamMapper.MapChunk(evt);
-                            foreach (var chunk in mapped)
+                            var streamMapper = new AnthropicToOpenAiMapper.StreamMapper(chunkId, created, model);
+                            await foreach (var evt in provider.GenerateStreamAsync(model, anthropicReq!, ct))
                             {
-                                var payload = JsonSerializer.Serialize(chunk, json);
-                                await writer.WriteAsync("data: " + payload + "\n\n");
-                                await writer.FlushAsync(ct);
-                                wroteAny = true;
+                                var mapped = streamMapper.MapChunk(evt);
+                                foreach (var chunk in mapped)
+                                {
+                                    var payload = JsonSerializer.Serialize(chunk, json);
+                                    await writer.WriteAsync("data: " + payload + "\n\n");
+                                    await writer.FlushAsync(ct);
+                                    wroteAny = true;
+                                }
                             }
-                        }
 
-                        // 收尾用量块与 [DONE]
-                        var usage = streamMapper.Finalize();
-                        if (usage is not null)
-                        {
-                            var usageChunk = JsonSerializer.Serialize(
-                                new ChatCompletionChunk
-                                {
-                                    Id = chunkId,
-                                    Created = created,
-                                    Model = model,
-                                    Choices = new List<ChatChunkChoice>(),
-                                    Usage = usage
-                                }, json);
-                            await writer.WriteAsync("data: " + usageChunk + "\n\n");
-                        }
-                        await writer.WriteAsync("data: [DONE]\n\n");
-                        await writer.FlushAsync(ct);
-                    }
-                    catch (UpstreamException ex)
-                    {
-                        if (!wroteAny)
-                        {
-                            ctx.Response.StatusCode = (int)ex.StatusCode;
-                            await writer.WriteAsync(JsonSerializer.Serialize(
-                                new OpenAiErrorBody
-                                {
-                                    Error = new OpenAiError
+                            // 收尾用量块与 [DONE]
+                            var usage = streamMapper.Finalize();
+                            if (usage is not null)
+                            {
+                                var usageChunk = JsonSerializer.Serialize(
+                                    new ChatCompletionChunk
                                     {
-                                        Message = ex.Message,
-                                        Type = "upstream_error",
-                                        Code = "upstream_error"
-                                    }
-                                }, json));
+                                        Id = chunkId,
+                                        Created = created,
+                                        Model = model,
+                                        Choices = new List<ChatChunkChoice>(),
+                                        Usage = usage
+                                    }, json);
+                                await writer.WriteAsync("data: " + usageChunk + "\n\n");
+                            }
+                            await writer.WriteAsync("data: [DONE]\n\n");
+                            await writer.FlushAsync(ct);
                         }
-                        else
+                        catch (UpstreamException ex)
                         {
+                            if (!wroteAny)
+                            {
+                                ctx.Response.StatusCode = (int)ex.StatusCode;
+                                await writer.WriteAsync(JsonSerializer.Serialize(
+                                    new OpenAiErrorBody
+                                    {
+                                        Error = new OpenAiError
+                                        {
+                                            Message = ex.Message,
+                                            Type = "upstream_error",
+                                            Code = "upstream_error"
+                                        }
+                                    }, json));
+                            }
+                            else
+                            {
+                                await writer.WriteAsync("data: " + JsonSerializer.Serialize(
+                                    new OpenAiErrorBody
+                                    {
+                                        Error = new OpenAiError
+                                        {
+                                            Message = ex.Message,
+                                            Type = "upstream_error",
+                                            Code = "upstream_error"
+                                        }
+                                    }, json) + "\n\n");
+                                await writer.WriteAsync("data: [DONE]\n\n");
+                            }
+                            await writer.FlushAsync(ct);
+                        }
+                        catch (Exception ex) when (ct.IsCancellationRequested)
+                        {
+                            // 客户端提前断开：正常结束
+                            logger.LogDebug(ex, "Streaming aborted by client");
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(ex, "Error during streaming");
                             await writer.WriteAsync("data: " + JsonSerializer.Serialize(
                                 new OpenAiErrorBody
                                 {
                                     Error = new OpenAiError
                                     {
-                                        Message = ex.Message,
-                                        Type = "upstream_error",
-                                        Code = "upstream_error"
+                                        Message = "Internal error: " + ex.Message,
+                                        Type = "api_error",
+                                        Code = "internal_error"
                                     }
                                 }, json) + "\n\n");
                             await writer.WriteAsync("data: [DONE]\n\n");
+                            await writer.FlushAsync(ct);
                         }
-                        await writer.FlushAsync(ct);
                     }
                     catch (Exception ex)
                     {
-                        logger.LogError(ex, "Error during streaming");
-                        await writer.WriteAsync("data: " + JsonSerializer.Serialize(
-                            new OpenAiErrorBody
-                            {
-                                Error = new OpenAiError
-                                {
-                                    Message = "Internal error: " + ex.Message,
-                                    Type = "api_error",
-                                    Code = "internal_error"
-                                }
-                            }, json) + "\n\n");
-                        await writer.WriteAsync("data: [DONE]\n\n");
-                        await writer.FlushAsync(ct);
+                        // 客户端断开后再写失败等：仅记录，避免未处理异常导致进程退出
+                        logger.LogDebug(ex, "Streaming terminated (client aborted or write failed)");
                     }
                 },
                 "text/event-stream");

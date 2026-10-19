@@ -12,11 +12,7 @@ namespace ClaudeAgent.Tests.IntegrationTests;
 /// </summary>
 public class GatewayLiveIntegrationTests
 {
-    private static readonly HttpClient Client = new()
-    {
-        BaseAddress = new Uri("http://127.0.0.1:5055/v1/"),
-        Timeout = TimeSpan.FromSeconds(120)
-    };
+    private static readonly HttpClient Client = TestGateway.CreateClient(TimeSpan.FromSeconds(120));
 
     private static string? _cachedModel;
 

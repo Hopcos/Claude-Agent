@@ -1,11 +1,14 @@
 # ClaudeAgent 网关 Python OpenAI SDK 交叉验证（可选，额度消耗最小化：自动选 Haiku）
 # 用法：pip install openai 后执行 python scripts/verify_python.py
+import os
 import sys
 
 from openai import OpenAI
 
 BASE = "http://127.0.0.1:5055/v1"
-client = OpenAI(base_url=BASE, api_key="sk-claude")
+# 网关若配置了鉴权（CLAUDE_API_KEY / GATEWAY_API_KEY），需用相同 key；未配置则任意值即可
+API_KEY = os.environ.get("CLAUDE_API_KEY") or os.environ.get("GATEWAY_API_KEY") or "sk-claude"
+client = OpenAI(base_url=BASE, api_key=API_KEY)
 
 
 def pick_haiku():

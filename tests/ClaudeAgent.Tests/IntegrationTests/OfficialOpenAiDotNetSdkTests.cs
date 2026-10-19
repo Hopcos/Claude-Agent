@@ -10,11 +10,7 @@ namespace ClaudeAgent.Tests.IntegrationTests;
 /// <summary>微软官方 OpenAI .NET SDK 直连网关的端到端验证（自动选择 Haiku 模型控制额度消耗）。</summary>
 public class OfficialOpenAiDotNetSdkTests
 {
-    private static readonly HttpClient ProbeClient = new()
-    {
-        BaseAddress = new Uri("http://127.0.0.1:5055/v1/"),
-        Timeout = TimeSpan.FromSeconds(30)
-    };
+    private static readonly HttpClient ProbeClient = TestGateway.CreateClient(TimeSpan.FromSeconds(30));
 
     private static async Task<ChatClient?> CreateClientAsync()
     {
@@ -51,7 +47,7 @@ public class OfficialOpenAiDotNetSdkTests
         {
             Endpoint = new Uri("http://127.0.0.1:5055/v1")
         };
-        var client = new OpenAIClient(new ApiKeyCredential("sk-claude"), options);
+        var client = new OpenAIClient(new ApiKeyCredential(TestGateway.ApiKey), options);
         return client.GetChatClient(model);
     }
 

@@ -90,9 +90,10 @@ public sealed class OpenAiToolCall
 
     [JsonPropertyName("type")] public string Type { get; set; } = "function";
 
-    /// <summary>流式增量块使用：本工具调用在 delta 中的序号。</summary>
-    [JsonIgnore]
-    public int StreamIndex { get; set; }
+    /// <summary>流式增量块使用：本工具调用在 delta 中的序号（OpenAI 规范字段 index，缺失会导致客户端无法把
+    /// 分段参数与工具调用关联，从而报 tool/result 与 tool source 不匹配）。非流式不设置则省略。</summary>
+    [JsonPropertyName("index")]
+    public int? StreamIndex { get; set; }
 
     [JsonPropertyName("function")] public OpenAiToolCallFunction Function { get; set; } = new();
 }

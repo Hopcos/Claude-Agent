@@ -1,8 +1,23 @@
 param(
-    [string]$BaseUrl = "http://127.0.0.1:5055/v1"
+    [string]$BaseUrl = "http://127.0.0.1:5055/v1",
+    [string]$ApiKey = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# 网关鉴权：优先用显式 -ApiKey，否则读环境变量（与网关 CLAUDE_API_KEY / GATEWAY_API_KEY 一致）
+if ([string]::IsNullOrEmpty($ApiKey)) {
+    $ApiKey = $env:CLAUDE_API_KEY
+    if ([string]::IsNullOrEmpty($ApiKey)) { $ApiKey = $env:GATEWAY_API_KEY }
+}
+if (-not [string]::IsNullOrEmpty($ApiKey)) {
+    # 让集成测试/被拉起网关使用同一把 key
+    $env:CLAUDE_API_KEY = $ApiKey
+    $env:GATEWAY_API_KEY = $ApiKey
+    Write-Host "Gateway auth key: <configured>" -ForegroundColor Gray
+} else {
+    Write-Host "Gateway auth: none (open)" -ForegroundColor Gray
+}
 
 Write-Host "===========================================================" -ForegroundColor Cyan
 Write-Host "   ClaudeAgent .NET 10 Verification Suite (Full Loop)      " -ForegroundColor Green
@@ -22,8 +37,12 @@ if (Test-Path $credFile) {
 # Step 1: 确保网关在线（未运行则后台拉起）
 $healthUrl = "$BaseUrl/health"
 $started = $false
+$headers = @{}
+if (-not [string]::IsNullOrEmpty($ApiKey)) {
+    $headers["Authorization"] = "Bearer $ApiKey"
+}
 try {
-    $null = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 3
+    $null = Invoke-RestMethod -Uri $healthUrl -Method Get -Headers $headers -TimeoutSec 3
 } catch {
     Write-Host "`n[Step 1/2] Gateway not running; starting in background..." -ForegroundColor Yellow
     & (Join-Path $PSScriptRoot "start_background.ps1") -Port 5055
