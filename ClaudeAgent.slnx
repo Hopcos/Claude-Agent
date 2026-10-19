@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".dockerignore" />
+    <File Path=".env.example" />
+    <File Path=".gitignore" />
+    <File Path="docker-compose.yml" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/Solution Items/scripts/">
+    <File Path="scripts/start_background.ps1" />
+    <File Path="scripts/start_gateway.ps1" />
+    <File Path="scripts/stop_gateway.ps1" />
+    <File Path="scripts/verify_all.ps1" />
+    <File Path="scripts/verify_python.py" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/ClaudeAgent/ClaudeAgent.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ClaudeAgent.Tests/ClaudeAgent.Tests.csproj" />
+  </Folder>
+</Solution>

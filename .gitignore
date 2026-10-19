@@ -1,0 +1,27 @@
+# Build output
+bin/
+obj/
+publish/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Appsettings that carry credentials — never commit them.
+**/appsettings.Development.json
+**/appsettings.hopcos.json
+
+# Others
+logs/
+.env
+.env.*
+!.env.example
+.claude-agent-state.json
+# 授权信息（Docker 方式 B 的凭据文件，绝不入库）
+credentials.json
+*.credentials.json
+oauth_creds.json
+adc.json

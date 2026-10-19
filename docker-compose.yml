@@ -1,0 +1,68 @@
+# ClaudeAgent - OpenAI 兼容网关（把本机 Claude Code 账号通过 OAuth 双 Token 永续暴露为 /v1/*）
+# 用法：
+#   1. 准备授权信息（二选一，推荐 A）：
+#      A. 把本机 Claude Code 的 refresh token 写入 .env 的 CLAUDE_REFRESH_TOKEN（推荐，永续无文件权限问题）
+#      B. 把本机 ~/.claude/.credentials.json 复制到本目录 credentials.json（用 Docker secret 注入，只读、不进镜像层）
+#   2. cp .env.example .env   （按需修改 GATEWAY_PORT / 代理等）
+#   3. docker compose up -d --build
+#   4. 测试:  curl http://localhost:8080/v1/models
+#             curl http://localhost:8080/v1/chat/completions -H 'content-type: application/json' -d '{...}'
+#
+# 可用环境变量（.env 或 shell 导出，均有默认值）：
+#   GATEWAY_PORT            默认 8080（宿主机映射端口）
+#   CLAUDE_REFRESH_TOKEN    Claude Code refresh token（优先于凭据文件；无头部署永续核心）
+#   CLAUDE_DEFAULT_MODEL    默认 claude-haiku-4-5（未指定模型时兜底）
+#   CLAUDE_API_KEY          可选：网关调用方鉴权
+#   HTTPS_PROXY / HTTP_PROXY / NO_PROXY   容器出网代理（本网络直连 Anthropic 被封，见 README）
+#   CLAUDE_STATE_FILE       网关 token 状态文件路径（默认 /app/state/claude-agent-state.json，挂到可写卷）
+
+name: claude-agent
+
+services:
+  claude-agent:
+    build:
+      context: .
+      dockerfile: src/ClaudeAgent/Dockerfile
+    image: claude-agent:10.0
+    container_name: claude-agent
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      # —— 授权信息（推荐方式 A：env refresh token；方式 B 见下方 secret 注释）——
+      CLAUDE_AUTH_SOURCE: ${CLAUDE_AUTH_SOURCE:-Env}
+      CLAUDE_REFRESH_TOKEN: ${CLAUDE_REFRESH_TOKEN:-}
+      CLAUDE_OAUTH_SCOPES: ${CLAUDE_OAUTH_SCOPES:-user:file_upload user:inference user:mcp_servers user:plugins user:profile user:sessions:claude_code}
+      # 方式 B：改用 Docker secret 注入的凭据文件（需注释掉上方 CLAUDE_REFRESH_TOKEN）
+      # CLAUDE_CREDENTIALS_FILE: /run/secrets/claude_credentials
+      # 网关 token 状态文件写到可写卷，保证双 Token 永续跨容器重启
+      CLAUDE_STATE_FILE: ${CLAUDE_STATE_FILE:-/app/state/claude-agent-state.json}
+      # —— 网络：容器出网需经代理（本网络直连 Anthropic 被封；若服务器可直连则留空）——
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+      # —— 可选：网关鉴权 / 默认模型 ——
+      # CLAUDE_API_KEY: ${CLAUDE_API_KEY:-}
+      CLAUDE_DEFAULT_MODEL: ${CLAUDE_DEFAULT_MODEL:-claude-haiku-4-5}
+      DOTNET_Logging__Console__FormatterName: simple
+    volumes:
+      - claude-state:/app/state
+    # 方式 B 需要：
+    # secrets:
+    #   - claude_credentials
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# 方式 B 需要：把本机 ~/.claude/.credentials.json 复制为本目录 ./credentials.json
+# secrets:
+#   claude_credentials:
+#     file: ./credentials.json
+
+volumes:
+  claude-state:

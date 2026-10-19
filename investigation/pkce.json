@@ -1,0 +1,6 @@
+﻿{
+    "clientId":  "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    "redirectUri":  "https://platform.claude.com/oauth/code/callback",
+    "verifier":  "gZexHpEsQ6N9is_-Gf3ogF4yxXGCQiuYQQE3rz_XkDg",
+    "state":  "PClDTLlLmHITh0iHTN0J5wKjf0LSWsX4IK3gAToo1Pj"
+}

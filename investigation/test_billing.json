@@ -1,0 +1,1 @@
+{"model":"claude-haiku-5-5","max_tokens":16,"messages":[{"role":"user","content":"respond with exactly: OK"}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.301.eb5; cc_entrypoint=sdk-cli;"}]}

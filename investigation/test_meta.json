@@ -1,0 +1,1 @@
+{"model":"claude-haiku-5-5","max_tokens":16,"messages":[{"role":"user","content":"respond with exactly: OK"}],"metadata":{"user_id":"{\"device_id\":\"638354c6f2a200fa9a368430c7b820f49f3d9448abb041d4b0580482eac7a74c\",\"account_uuid\":\"cee5eb2a-9fc5-4d81-85d1-21acf8d1714e\",\"session_id\":\"20901af8-8d95-46fb-9601-27e123726a19\"}"}}

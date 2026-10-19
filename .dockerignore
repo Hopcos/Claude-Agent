@@ -1,0 +1,18 @@
+# Docker 构建上下文排除项：凭据、本地产物、测试与调查文件绝不进镜像
+**/bin/
+**/obj/
+*.user
+.vs/
+.git/
+.gitignore
+# 凭据与敏感文件（方式 B 的 credentials.json 也会被排除，绝不打进镜像）
+credentials.json
+*.credentials.json
+oauth_creds.json
+adc.json
+.env
+.env.*
+# 文档与调查产物
+**/*.md
+README.md
+investigation/
