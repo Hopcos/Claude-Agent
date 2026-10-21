@@ -153,16 +153,14 @@ public sealed class ClaudeAccountService
         }
 
         var tokenEndpoint = string.IsNullOrWhiteSpace(creds.TokenEndpoint) ? DefaultTokenEndpoint : creds.TokenEndpoint;
-        using var body = new StringContent(
-            JsonSerializer.Serialize(new Dictionary<string, string>
-            {
-                ["grant_type"] = "refresh_token",
-                ["refresh_token"] = creds.RefreshToken,
-                ["client_id"] = creds.ClientId,
-                ["scope"] = creds.Scopes
-            }, JsonOptions.Anthropic),
-            Encoding.UTF8,
-            "application/json");
+        // 注意：Anthropic 的 OAuth token 端点只接受 application/x-www-form-urlencoded，JSON 会被拒绝(400 Invalid request format)。
+        using var body = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "refresh_token",
+            ["refresh_token"] = creds.RefreshToken,
+            ["client_id"] = creds.ClientId,
+            ["scope"] = creds.Scopes
+        });
 
         using var resp = await _http.PostAsync(tokenEndpoint, body, ct);
         var respBody = await resp.Content.ReadAsStringAsync(ct);
