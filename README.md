@@ -88,7 +88,9 @@ curl http://127.0.0.1:5055/v1/health
 
 ## 🐳 Docker / Docker Compose 部署
 
-项目内置多阶段 `Dockerfile`（`src/ClaudeAgent/Dockerfile`）与 `docker-compose.yml`，可将网关以 Linux 容器方式部署（适合服务器/无头环境）。容器内没有 Claude Code CLI，因此**授权信息（OAuth refresh token）需要由你首次复制/注入到容器**。双 Token 永续刷新会在容器内独立工作，与宿主机 CLI 互不影响。
+项目内置多阶段 `Dockerfile`（`src/ClaudeAgent/Dockerfile`）与 `docker-compose.yml`，可将网关以 Linux 容器方式部署（适合服务器/无头环境）。容器内没有 Claude Code CLI，因此**授权信息（Claude Code OAuth refresh token）需要由你首次复制/注入到容器**。双 Token 永续刷新会在容器内独立工作；刷新轮换出的新 token 会持久化到容器内可写卷（`claude-state`），与宿主机 CLI 互不影响。
+
+> ⚠️ **授权信息注入只有两种方式（二选一）**，优先级：**A（env） > B（secret 文件）**。不要同时启用两者；方式 B 必须保证 `CLAUDE_REFRESH_TOKEN` 为空，否则 env 会覆盖文件。
 
 ### 1. 准备授权信息（首次如何复制进 Docker）
 
@@ -99,32 +101,53 @@ $creds = Get-Content "$env:USERPROFILE\.claude\.credentials.json" -Raw | Convert
 $creds.claudeAiOauth.refreshToken     # 形如 sk-ant-ort01xxxx...
 ```
 
-然后二选一注入：
+#### 方式 A（推荐，永续最稳）：把 refresh token 写入 `.env`
 
-#### 方式 A（推荐）：把 refresh token 写入 `.env`
-- 无需挂载文件、无容器权限问题；刷新轮换后的新 token 由网关写回容器内可写卷，永续最稳。
-- 在项目根目录 `cp .env.example .env`，把上一步得到的 token 填入：
-  ```
-  CLAUDE_REFRESH_TOKEN=sk-ant-ort01xxxx...
-  CLAUDE_AUTH_SOURCE=Env
-  CLAUDE_STATE_FILE=/app/state/claude-agent-state.json
-  ```
-- 容器内无需凭据文件，网关会用 refresh token 直接向 OAuth 端点换取 access token，并持久化到 `claude-state` 卷。
+- 容器内无需挂载任何凭据文件，无文件权限问题；刷新轮换后的新 token 由网关写回容器内可写卷（`/app/state`），**token 永续不依赖宿主机**。
+- 操作步骤：
+  1. `cp .env.example .env`；
+  2. `.env` 中填入 refresh token，并确保**取消注释**这两行：
+     ```
+     CLAUDE_REFRESH_TOKEN=sk-ant-ort01xxxx...
+     CLAUDE_AUTH_SOURCE=Env
+     ```
+  3. `docker-compose.yml` 默认即方式 A（以下三行处于**启用**状态，保持不动即可）：
+     ```yaml
+     CLAUDE_AUTH_SOURCE: ${CLAUDE_AUTH_SOURCE:-Env}
+     CLAUDE_REFRESH_TOKEN: ${CLAUDE_REFRESH_TOKEN:-}
+     CLAUDE_OAUTH_SCOPES: ${CLAUDE_OAUTH_SCOPES:-user:file_upload user:inference user:mcp_servers user:plugins user:profile user:sessions:claude_code}
+     ```
+  4. 同时确保 `CLAUDE_CREDENTIALS_FILE` 与底部 `secrets:` 引用保持**注释**（方式 B 残留会干扰）。
+- 效果：网关启动即用 refresh token 换取 access token，并持久化到 `claude-state` 卷；容器重启后从卷内状态续用，token 再也不会"过期漂移"。
 
-#### 方式 B：复制凭据文件 + Docker secret
-- 若你更想复用完整的 `~/.claude/.credentials.json`：
-  ```powershell
-  Copy-Item "$env:USERPROFILE\.claude\.credentials.json" .\credentials.json
-  ```
-- 取消 `docker-compose.yml` 中 `CLAUDE_CREDENTIALS_FILE`、`secrets` 相关注释，并**注释掉 `CLAUDE_REFRESH_TOKEN`**（env 优先级更高，会覆盖文件）。
-- Docker secret 以**只读**方式挂载到 `/run/secrets/claude_credentials`，不进入镜像层；`.dockerignore` 已排除 `credentials.json`，绝不会被打进镜像。
+#### 方式 B：复制凭据文件 + Docker secret（只读注入）
+
+- 适合希望与宿主机共用同一份完整 `claudeAiOauth` 结构（含 scopes/subscriptionType）的场景。secret 以**只读**方式挂载到容器 `/run/secrets/claude_credentials`，**不进入镜像层**（`.dockerignore` 已排除 `credentials.json`）。
+- 操作步骤：
+  1. 复制本机凭据到项目根目录：
+     ```powershell
+     Copy-Item "$env:USERPROFILE\.claude\.credentials.json" .\credentials.json
+     ```
+  2. 在 `docker-compose.yml` 中：
+     - **取消注释** `CLAUDE_CREDENTIALS_FILE: /run/secrets/claude_credentials`；
+     - **取消注释** 服务级 `secrets:` 列表与顶层 `secrets:` 定义（顶层 `claude_credentials: {file: ./credentials.json}`，服务级 `- claude_credentials`，二者缺一不可，否则容器内 `/run/secrets/claude_credentials` 不存在）；
+     - **注释掉方式 A 的三行**（`CLAUDE_AUTH_SOURCE` / `CLAUDE_REFRESH_TOKEN` / `CLAUDE_OAUTH_SCOPES` env 透传）—— 方式 B 下 env 优先级更高，一旦填写就会覆盖文件来源。
+  3. 验证 secret 已挂载：
+     ```bash
+     sudo docker exec claude-agent ls -l /run/secrets/
+     sudo docker exec claude-agent cat /run/secrets/claude_credentials
+     ```
+- ⚠️ **方式 B 的"凭据漂移"坑（实战踩过）**：Claude Code 的 refresh token 是**单次使用**的 —— 本机 CLI 或宿主机网关每次成功刷新后，服务端会**轮换签发新 token**，旧 token 立即作废 `（invalid_grant: Refresh token not found or invalid）`。你复制进 WSL/服务器的 `credentials.json` 只是当时的一个"快照"，**只要本机再登录/刷新过，这份副本就过期了**。因此方式 B 需要：每次本机刷新过后，重新执行 `Copy-Item` 并 `docker compose up -d`。**若追求长期免维护，请用方式 A。**
 
 ### 2. 启动
 
-```powershell
-cp .env.example .env        # 按需改 GATEWAY_PORT / 代理 / CLAUDE_REFRESH_TOKEN
+```bash
+cd /path/to/Claude-Agent
+cp .env.example .env        # 按需改 GATEWAY_PORT / 代理 / 鉴权 key / 授权方式
 docker compose up -d --build
 ```
+
+> 改过源码/镜像后必须带 `--build`；怀疑构建缓存时用 `docker compose build --no-cache claude-agent` 重建。
 
 ### 3. 验证
 
@@ -137,15 +160,32 @@ curl http://localhost:8080/v1/chat/completions \
 docker compose logs -f claude-agent                      # 观察日志
 ```
 
+日志中确认授权链路正常的两行：
+
+```
+Discovered Claude Code account from <凭据来源> (claudeAiOauth)        # 方式 A 显示 Environment，方式 B 显示 /run/secrets/...
+Claude Code token refreshed successfully (valid ~3600s, until ...)   # 刷新成功，双 Token 永续开始工作
+```
+
+若看到 `Token refresh failed (400)`，对照下表：
+
+| 报错 message | 含义 | 处理 |
+| :--- | :--- | :--- |
+| `Invalid request format` / `Invalid JSON body` | 刷新请求格式或 client_id 不对 | 确认镜像内 `appsettings.json` 的 `Auth.ClientId` 是 `9d1c250a-...`（**git init 曾残留占位 `xxx`，会随镜像打进容器**）；确认代码为 `FormUrlEncodedContent` 版本 |
+| `invalid_grant` / `Refresh token not found or invalid` | **refresh token 已失效（最常见）** | 方式 A：换新的 `CLAUDE_REFRESH_TOKEN`；方式 B：重新 `Copy-Item` 本机 .credentials.json 并重建 |
+| `Client with id ... not found` | client_id 非官方值 | 检查环境变量 `CLAUDE_OAUTH_CLIENT_ID` / appsettings |
+
 ### 4. 部署注意事项（重要）
 
-- **网络出网（本网络必看）**：容器内**没有 Windows 系统代理**。若宿主机直连 `api.anthropic.com` 被封（本机已实证 403），必须给容器设置代理。`docker-compose.yml` 已透传 `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`，在 `.env` 填入即可（示例为 `http://10.0.5.230:7890`）。若代理宿主机 IP 在容器内不可达（Docker Desktop 的桥接网络），改用 `http://host.docker.internal:7890` 或宿主网卡 IP。
+- **镜像内严禁占位脏值**：`appsettings.json` 在早期开发时曾带有 `"ApiKey": "xxx"`、`"ClientId": "xxx"`、`"MetadataAccountId": "xxx"` 占位值，会随镜像打进容器并导致刷新 400。`git init` 后请检查并修正为真实值（ClientId 见上方表格，ApiKey 留空、MetadataAccountId 填真实 account_uuid 或留空）。修改后务必 `docker compose up -d --build --no-cache`。
+- **网络出网（本网络必看）**：容器内**没有 Windows 系统代理**。若宿主机直连 `api.anthropic.com` 被封（本机已实证 403），必须给容器设置代理。`docker-compose.yml` 已透传 `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`，在 `.env` 填入即可（示例为 `http://10.0.5.230:7890`）。若代理宿主机 IP 在容器内不可达（Docker Desktop 的桥接网络），改用 `http://host.docker.internal:7890` 或宿主网卡 IP。**注意**：能在容器内收到带 `request_id` 的 400/429 响应即说明网络已通，无需代理。
 - **永续 token 落盘**：容器默认把网关 token 状态写到 `/app/state/claude-agent-state.json`，该目录挂到命名卷 `claude-state`，保证容器重启后 refresh token 不丢失、双 Token 持续轮换。可经 `CLAUDE_STATE_FILE` 调整。
+- **方式 B 只读副本无法自愈**：secret 是只读挂载，容器内刷新出的新 token **不会写回** `/run/secrets/claude_credentials`，只落到 `/app/state` 卷。因此方式 B 下容器重启后若 `/app/state` 卷还在，网关仍能从状态文件续用新 token；若卷丢失 + 凭据副本又已过期，就会 `invalid_grant`。这也是推荐方式 A 的根本原因。
 - **容器内用户**：`Dockerfile` 以 `root` 运行，便于把凭据文件/卷挂载到 `~/.claude` 或 `/app/state`。若你改为非 root，需自行保证 `/app/state` 可写。
 - **端口**：容器监听 `8080`（`ASPNETCORE_URLS=http://+:8080`），宿主机映射端口由 `GATEWAY_PORT` 控制（默认 8080）。Windows 防火墙可能需放行该入站端口。
 - **构建需联网**：首次 `docker compose up --build` 需从 `mcr.microsoft.com` 拉取 .NET 10 的 SDK/ASP.NET 基础镜像。本项目零 NuGet 外部依赖，构建阶段无需额外外网。
 - **健康检查**：compose 使用 `/healthz` 端点（返回 `ok`），30s 间隔、3 次失败判定 unhealthy。
-- **鉴权**：设置 `CLAUDE_API_KEY` 后 `/v1/*` 需携带 `Authorization: Bearer <key>`；未设置则允许任意请求（内网建议设置）。
+- **鉴权**：设置 `CLAUDE_API_KEY` 后 `/v1/*` 需携带 `Authorization: Bearer <key>`；未设置则允许任意请求（内网建议设置）。注意 `.env` 里带 `#`/`;` 等特殊字符的值必须用**双引号**包裹（如 `CLAUDE_API_KEY="uW26nO#D3M#D;"`），否则 `#` 之后会被当作注释截断。
 
 ---
 
@@ -153,7 +193,7 @@ docker compose logs -f claude-agent                      # 观察日志
 
 ### 1. Cursor / Cline / Roo Code
 - **Base URL**：`http://127.0.0.1:5055/v1`
-- **API Key**：网关未配置鉴权时任意值即可；若已配置 `CLAUDE_API_KEY`/`GATEWAY_API_KEY`（或 appsettings `Gateway:ApiKey`），需填入**同一个 key**（如 `xxx`）。
+- **API Key**：网关未配置鉴权时任意值即可（appsettings `Gateway:ApiKey` 默认空）；若已配置 `CLAUDE_API_KEY`/`GATEWAY_API_KEY` 环境变量，需填入**同一个 key**（`.env` 中带 `#`/`;` 的值记得加双引号）。
 - **Model ID**：`claude-haiku-4-5` / `claude-sonnet-4-5` 等
 
 ### 2. 官方 .NET C# OpenAI SDK (NuGet: OpenAI 2.x)
@@ -240,7 +280,7 @@ llm = ChatOpenAI(
 | :--- | :--- |
 | OAuth Token 端点 | `https://platform.claude.com/v1/oauth/token`（旧版 `console.anthropic.com` 端点已迁移） |
 | client_id | `9d1c250a-e61b-44d9-88ed-5944d1962f5e`（prod；`22422756-...` 为 local 调试变体） |
-| 刷新请求体 | JSON `{grant_type:"refresh_token", refresh_token, client_id, scope}`，**scope 必须为空格拼接字符串**（传数组会被判 400 Invalid request format） |
+| 刷新请求体 | **`application/x-www-form-urlencoded`**（表单编码），字段 `grant_type=refresh_token&refresh_token=...&client_id=...&scope=...`；**发 JSON 会被判 400 `Invalid request format / Invalid JSON body`**（实测差异：JSON→`Invalid JSON body`，非 UUID 格式 client_id→`Invalid request format`） |
 | 刷新响应 | `access_token / refresh_token(可选轮换) / expires_in / scope` |
 | 凭据结构 | `~/.claude/.credentials.json` → `claudeAiOauth{accessToken, refreshToken, expiresAt(ms), refreshTokenExpiresAt(ms), scopes[], subscriptionType}` |
 | 上游鉴权头 | `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20,claude-code-20250219` + `User-Agent: claude-cli/<ver> (external, sdk-cli)` |
@@ -256,6 +296,14 @@ llm = ChatOpenAI(
 
 ### Q1: 提示 `未找到有效的 Claude Code 登录凭据` 或 `invalid_grant`？
 说明本机 Claude Code 未登录或 token 已被服务器端吊销（例如账号在其他设备重新登录/登出）。请在终端运行 `claude auth login` 重新登录，网关即可无感读取新凭据。原始凭据会自动备份到 `investigation/credentials.backup.json`。
+
+> **Docker 方式 B 特别注意**：若容器报 `invalid_grant: Refresh token not found or invalid`，通常是 `credentials.json` 副本已过期 —— Claude Code 每次刷新都会**轮换 refresh token 并作废旧值**，过早复制的副本失效。重新 `Copy-Item` 最新凭据并重建容器，或改用方式 A（env 注入）。
+
+### Q1.5: Docker 容器报 `Token refresh failed (400)`，怎么区分原因？
+看报错 message：
+- `Invalid request format` / `Invalid JSON body` / `Client with id ... not found` → **client_id / 请求格式问题**。先确认镜像内 `appsettings.json` 的 `Auth.ClientId` 是官方值 `9d1c250a-e61b-44d9-88ed-5944d1962f5e`（git init 曾携带占位 `xxx` 并打进镜像），且代码为 `FormUrlEncodedContent` 版本；然后 `docker compose up -d --build --no-cache` 重建。
+- `invalid_grant` / `Refresh token not found or invalid` → **refresh token 已失效**。按上一条处理。
+- `429 rate_limit_error` → OAuth 端点限流（本地反复手工刷新测试会触发），等几分钟重试；也说明网络和格式都没问题。
 
 ### Q2: 登录/请求一直报 403 "Request not allowed"？
 本机网络出口被 Anthropic 拒绝直连（已实证）。**Node.js 的 claude.exe 不读 Windows 系统代理**，即使浏览器能正常访问也会 403。解决：
