@@ -94,11 +94,57 @@ curl http://127.0.0.1:5055/v1/health
 
 ### 1. 准备授权信息（首次如何复制进 Docker）
 
-先在本机提取 Claude Code 的 refresh token：
+> ⚠️ **本机已知坑（必读）**：这台机器上 Claude Code CLI 会**偶发清空** `~/.claude/.credentials.json` 的 accessToken/refreshToken（实测发生于 10/26，见 FAQ Q3）。因此**不要只从 `.credentials.json` 提取**，用下面的稳健脚本按「① 网关状态文件 → ② 备份 → ③ 当前文件」回退，并校验非空。
+
+先在本机提取 Claude Code 的 refresh token（多来源回退，自动挑选第一个有效值）。**最简单**：直接在 Windows PowerShell（Claude Code 所在机器）运行项目自带的脚本：
 
 ```powershell
-$creds = Get-Content "$env:USERPROFILE\.claude\.credentials.json" -Raw | ConvertFrom-Json
-$creds.claudeAiOauth.refreshToken     # 形如 sk-ant-ort01xxxx...
+cd D:\bs\code\others\Claude-Agent
+.\scripts\get_refresh_token.ps1     # 输出「来源」+「refreshToken」，直接复制
+```
+
+脚本逻辑如下（也可手动粘贴执行，注意需在 **Windows PowerShell**，不能在 WSL bash）：
+
+> ⚠️ **优先级关键**：`claude auth login` 后新 token 在 **`.credentials.json`**（最优先）；网关状态文件只在 `.credentials.json` 被 CLI 清空时作为回退。**不要**优先取状态文件 —— 那是旧 token，登录后已作废（会报 `invalid_grant`）。
+
+```powershell
+# 按优先级回退：① 当前凭据文件（登录后最新）→ ② 网关状态文件 → ③ 凭据备份
+function Get-ClaudeRefreshToken {
+  $h = "$env:USERPROFILE\.claude"
+  # ① 当前凭据文件（claude auth login 后最新 token 在此）
+  $cur = "$h\.credentials.json"
+  if (Test-Path $cur) {
+    $rt = (Get-Content $cur -Raw | ConvertFrom-Json).claudeAiOauth.refreshToken
+    if ($rt) { return @{ Token = $rt; Source = "当前凭据文件 ($cur)" } }
+  }
+  # ② 网关自身状态文件（仅在 .credentials.json 被 CLI 清空时回退）
+  $state = "$h\claude-agent-state.json"
+  if (Test-Path $state) {
+    $rt = (Get-Content $state -Raw | ConvertFrom-Json).refresh_token
+    if ($rt) { return @{ Token = $rt; Source = "网关状态文件 ($state)" } }
+  }
+  # ③ 凭据备份（写回时自动保留）
+  $bak = "$h\.credentials.json.bak"
+  if (Test-Path $bak) {
+    $rt = (Get-Content $bak -Raw | ConvertFrom-Json).claudeAiOauth.refreshToken
+    if ($rt) { return @{ Token = $rt; Source = "凭据备份 ($bak)" } }
+  }
+  return $null
+}
+$r = Get-ClaudeRefreshToken
+if ($r) { "来源: $($r.Source)`nrefreshToken: $($r.Token)" }
+else   { "❌ 未找到有效 refreshToken，请运行 claude auth login 重新登录后再试" }
+```
+
+**（可选）验证该 token 仍然有效** —— ⚠️ **注意：验证会触发一次刷新并轮换 refresh token**，会使 `.credentials.json` 里的当前值作废、改用新值。所以**只在你想确认能登录、且愿意随后重新提取时**才做；否则直接拿去部署即可（`claude auth login` 刚签发的 token 默认有效）。Anthropic 端点可能短暂限流，等几秒重试；返回 `200` + `access_token` 即有效，返回 `invalid_grant` 即已作废需重新登录：
+
+```powershell
+$rt = (Get-ClaudeRefreshToken).Token
+curl.exe -X POST "https://platform.claude.com/v1/oauth/token" `
+  -H "Content-Type: application/x-www-form-urlencoded" `
+  --data-urlencode "grant_type=refresh_token" `
+  --data-urlencode "refresh_token=$rt" `
+  --data-urlencode "client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ```
 
 #### 方式 A（推荐，永续最稳）：把 refresh token 写入 `.env`
@@ -299,6 +345,8 @@ llm = ChatOpenAI(
 
 > **Docker 方式 B 特别注意**：若容器报 `invalid_grant: Refresh token not found or invalid`，通常是 `credentials.json` 副本已过期 —— Claude Code 每次刷新都会**轮换 refresh token 并作废旧值**，过早复制的副本失效。重新 `Copy-Item` 最新凭据并重建容器，或改用方式 A（env 注入）。
 
+> **本机 CLI 清空凭据坑**：`~/.claude/.credentials.json` 的 accessToken/refreshToken 可能被 CLI **偶发清空**（实测 10/26）。此时不要只盯着该文件 —— 用上面的 `Get-ClaudeRefreshToken` 从**网关状态文件 / `.credentials.json.bak`** 找回有效 token；若全空，`claude auth login` 重新登录。
+
 ### Q1.5: Docker 容器报 `Token refresh failed (400)`，怎么区分原因？
 看报错 message：
 - `Invalid request format` / `Invalid JSON body` / `Client with id ... not found` → **client_id / 请求格式问题**。先确认镜像内 `appsettings.json` 的 `Auth.ClientId` 是官方值 `9d1c250a-e61b-44d9-88ed-5944d1962f5e`（git init 曾携带占位 `xxx` 并打进镜像），且代码为 `FormUrlEncodedContent` 版本；然后 `docker compose up -d --build --no-cache` 重建。
@@ -317,6 +365,8 @@ claude auth login
 
 ### Q3: 登录成功但 `claude -p` 仍报 "OAuth session expired and could not be refreshed"？
 检查 `%USERPROFILE%\.claude\.credentials.json`：若 `accessToken`/`refreshToken` 为空字符串，说明 CLI 的凭据持久化失败（本机实测出现过：交换成功但凭据被清空）。重跑登录并观察终端是否出现 `credentials could not be saved` 提示；必要时改用 `claude auth login --claudeai` 流程（该流程在 2.1.301 实测可产生真实 token 落盘）。
+
+> **在重新登录前，先尝试找回 token**：`claude-agent-state.json` 或 `.credentials.json.bak` 里通常还留有网关上次成功刷新后的有效 refreshToken（见上方 `Get-ClaudeRefreshToken`），可直接复用到 Docker 的 `CLAUDE_REFRESH_TOKEN`，免去重新登录。只有当这些也都为空时才需要 `claude auth login`。
 
 ### Q4: 端口 5055 被占用？
 `.\scripts\start_gateway.ps1 -Port 5056`，客户端 Base URL 同步改为 `http://127.0.0.1:5056/v1`。
