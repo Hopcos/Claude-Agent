@@ -34,8 +34,14 @@ function Get-ClaudeRefreshToken {
 
 $r = Get-ClaudeRefreshToken
 if ($r) {
+  Write-Host ""
   Write-Host "Source: $($r.Source)"
+  Write-Host ""
   Write-Host "refreshToken: $($r.Token)"
+  Write-Host ""
+  try { Set-Clipboard -Value $r.Token; Write-Host ">> Copied to clipboard (paste it into CLAUDE_REFRESH_TOKEN)." -ForegroundColor Green } catch { Write-Host ">> Clipboard failed, copy the token above manually." -ForegroundColor Yellow }
 } else {
   Write-Host "No valid refreshToken found. Please run 'claude auth login' and try again." -ForegroundColor Red
 }
+Write-Host ""
+Read-Host "Press Enter to close"
