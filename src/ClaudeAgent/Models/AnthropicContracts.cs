@@ -31,6 +31,26 @@ public sealed class AnthropicMessageRequest
     [JsonPropertyName("stop_sequences")] public List<string>? StopSequences { get; set; }
 
     [JsonPropertyName("stream")] public bool? Stream { get; set; }
+
+    /// <summary>Anthropic 思考配置（adaptive / enabled / disabled）。</summary>
+    [JsonPropertyName("thinking")] public AnthropicThinkingConfig? Thinking { get; set; }
+
+    /// <summary>Anthropic 输出配置（含 effort: low / medium / high / max 等）。</summary>
+    [JsonPropertyName("output_config")] public AnthropicOutputConfig? OutputConfig { get; set; }
+}
+
+public sealed class AnthropicThinkingConfig
+{
+    [JsonPropertyName("type")] public string Type { get; set; } = "adaptive";
+
+    [JsonPropertyName("budget_tokens")] public int? BudgetTokens { get; set; }
+
+    [JsonPropertyName("display")] public string? Display { get; set; }
+}
+
+public sealed class AnthropicOutputConfig
+{
+    [JsonPropertyName("effort")] public string? Effort { get; set; }
 }
 
 public sealed class AnthropicMessage

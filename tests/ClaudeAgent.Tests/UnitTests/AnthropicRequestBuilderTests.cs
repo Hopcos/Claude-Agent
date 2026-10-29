@@ -216,6 +216,55 @@ public class AnthropicRequestBuilderTests
     }
 
     [Fact]
+    public void Build_AdaptiveThinking_SetsAdaptiveAndEffort()
+    {
+        var builder = CreateBuilder();
+        var req = builder.Build(new ChatCompletionRequest
+        {
+            Model = "claude-haiku-5-5",
+            ReasoningEffort = "high",
+            Messages = new List<ChatMessage> { Msg("user", "think about this") }
+        });
+
+        Assert.NotNull(req.Thinking);
+        Assert.Equal("adaptive", req.Thinking.Type);
+        Assert.NotNull(req.OutputConfig);
+        Assert.Equal("high", req.OutputConfig.Effort);
+    }
+
+    [Fact]
+    public void Build_BudgetThinking_SetsEnabledAndBudgetTokens()
+    {
+        var builder = CreateBuilder();
+        var req = builder.Build(new ChatCompletionRequest
+        {
+            Model = "claude-3-7-sonnet",
+            ReasoningEffort = "medium",
+            Messages = new List<ChatMessage> { Msg("user", "think about this") }
+        });
+
+        Assert.NotNull(req.Thinking);
+        Assert.Equal("enabled", req.Thinking.Type);
+        Assert.Equal(8192, req.Thinking.BudgetTokens);
+        Assert.True(req.MaxTokens > req.Thinking.BudgetTokens);
+    }
+
+    [Fact]
+    public void Build_ThinkingOff_LeavesThinkingNull()
+    {
+        var builder = CreateBuilder();
+        var req = builder.Build(new ChatCompletionRequest
+        {
+            Model = "claude-haiku-5-5",
+            ReasoningEffort = "off",
+            Messages = new List<ChatMessage> { Msg("user", "no think") }
+        });
+
+        Assert.Null(req.Thinking);
+        Assert.Null(req.OutputConfig);
+    }
+
+    [Fact]
     public void Build_OnlySystemMessages_Throws()
     {
         var builder = CreateBuilder();

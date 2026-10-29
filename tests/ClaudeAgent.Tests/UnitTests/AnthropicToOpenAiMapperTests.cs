@@ -62,6 +62,30 @@ public class AnthropicToOpenAiMapperTests
     }
 
     [Fact]
+    public void MapResponse_ThinkingBlock_ProducesReasoningContent()
+    {
+        var mapper = new AnthropicToOpenAiMapper();
+        var resp = ParseResponse("""
+            {
+              "id": "msg_think",
+              "stop_reason": "end_turn",
+              "content": [
+                { "type": "thinking", "thinking": "Let me ponder this step by step." },
+                { "type": "text", "text": "Here is the answer." }
+              ],
+              "usage": { "input_tokens": 15, "output_tokens": 25 }
+            }
+            """);
+
+        var mapped = mapper.MapResponse(resp, "claude-haiku-5-5");
+
+        Assert.Equal("Let me ponder this step by step.", mapped.Choices[0].Message.ReasoningContent);
+        Assert.Equal("Here is the answer.", mapped.Choices[0].Message.Content);
+        Assert.NotNull(mapped.Usage!.CompletionTokensDetails);
+        Assert.True(mapped.Usage.CompletionTokensDetails.ReasoningTokens > 0);
+    }
+
+    [Fact]
     public void MapResponse_CacheReadTokens_PopulatePromptDetails()
     {
         var mapper = new AnthropicToOpenAiMapper();

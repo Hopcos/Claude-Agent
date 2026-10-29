@@ -14,6 +14,7 @@ public sealed class AnthropicToOpenAiMapper
     {
         var message = new ChatResponseMessage();
         var sb = new System.Text.StringBuilder();
+        var sbReasoning = new System.Text.StringBuilder();
         var toolCalls = new List<OpenAiToolCall>();
         var reasoningTokens = 0;
 
@@ -43,15 +44,22 @@ public sealed class AnthropicToOpenAiMapper
                         break;
 
                     case "thinking":
-                        // 非流式思维链统计进 reasoning_tokens（内容不外露，与 OpenAI 规范一致）
                         if (block.TryGetProperty("thinking", out var th) && th.ValueKind == JsonValueKind.String)
-                            reasoningTokens += EstimateTokens(th.GetString());
+                        {
+                            var thinkingText = th.GetString();
+                            sbReasoning.Append(thinkingText);
+                            reasoningTokens += EstimateTokens(thinkingText);
+                        }
                         break;
                 }
             }
         }
 
         message.Content = sb.Length > 0 ? sb.ToString() : null;
+        if (sbReasoning.Length > 0)
+        {
+            message.ReasoningContent = sbReasoning.ToString();
+        }
         if (toolCalls.Count > 0) message.ToolCalls = toolCalls;
 
         var finishReason = toolCalls.Count > 0
@@ -72,11 +80,11 @@ public sealed class AnthropicToOpenAiMapper
                     FinishReason = finishReason
                 }
             },
-            Usage = MapUsage(from.Usage)
+            Usage = MapUsage(from.Usage, reasoningTokens)
         };
     }
 
-    public static ChatUsage? MapUsage(AnthropicUsage? u)
+    public static ChatUsage? MapUsage(AnthropicUsage? u, int reasoningTokens = 0)
     {
         if (u is null) return null;
         var cached = u.CacheReadInputTokens ?? 0;
@@ -87,6 +95,9 @@ public sealed class AnthropicToOpenAiMapper
             TotalTokens = u.InputTokens + u.OutputTokens,
             PromptTokensDetails = cached > 0
                 ? new ChatUsagePromptDetails { CachedTokens = cached }
+                : null,
+            CompletionTokensDetails = reasoningTokens > 0
+                ? new ChatUsageCompletionDetails { ReasoningTokens = reasoningTokens }
                 : null
         };
     }

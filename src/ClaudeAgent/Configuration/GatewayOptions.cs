@@ -52,8 +52,9 @@ public sealed class ProviderOptions
 
     public string AnthropicVersion { get; set; } = "2023-06-01";
 
-    /// <summary>OAuth 通道必需的 beta 头（oauth + claude-code 标识，CLI 同款）。</summary>
-    public string AnthropicBeta { get; set; } = "oauth-2025-04-20,claude-code-20250219";
+    /// <summary>OAuth 通道必需的 beta 头（oauth + claude-code 标识 + 思考/思维链 beta 头，CLI 同款）。</summary>
+    public string AnthropicBeta { get; set; } =
+        "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,effort-2025-11-24";
 
     public string UserAgent { get; set; } = "claude-cli/2.1.301 (external, sdk-cli)";
 

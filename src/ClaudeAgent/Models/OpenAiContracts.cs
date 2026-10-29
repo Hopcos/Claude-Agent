@@ -26,6 +26,17 @@ public sealed class ChatCompletionRequest
     [JsonPropertyName("tools")] public List<OpenAiTool>? Tools { get; set; }
 
     [JsonPropertyName("tool_choice")] public object? ToolChoice { get; set; }
+
+    /// <summary>
+    /// 思考深度 / 推理级别（OpenAI 规范字段：off / low / medium / high / max）。
+    /// 网关自动将其映射为 Anthropic 思考协议（adaptive / enabled thinking + output_config.effort）。
+    /// </summary>
+    [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
+
+    /// <summary>可选自定义思考 token 预算（vLLM / Qwen / Claude 规范）。</summary>
+    [JsonPropertyName("thinking_budget")] public int? ThinkingBudget { get; set; }
+
+    [JsonPropertyName("thinking_budget_tokens")] public int? ThinkingBudgetTokens { get; set; }
 }
 
 public sealed class ChatMessage
@@ -128,6 +139,7 @@ public sealed class ChatResponseMessage
 {
     [JsonPropertyName("role")] public string Role { get; set; } = "assistant";
     [JsonPropertyName("content")] public string? Content { get; set; }
+    [JsonPropertyName("reasoning_content")] public string? ReasoningContent { get; set; }
     [JsonPropertyName("tool_calls")] public List<OpenAiToolCall>? ToolCalls { get; set; }
 }
 

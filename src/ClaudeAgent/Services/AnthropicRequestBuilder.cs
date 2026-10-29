@@ -169,7 +169,103 @@ public sealed class AnthropicRequestBuilder
             req.ToolChoice = MapToolChoice(tc, req.Tools);
         }
 
+        // 推理 / 思考深度配置（reasoning_effort 映射为 Anthropic thinking & output_config）
+        ConfigureThinking(req, request);
+
         return req;
+    }
+
+    /// <summary>
+    /// 将 OpenAI 格式的 reasoning_effort / 思考预算映射为 Anthropic 协议。
+    /// 4.6+ / 5.x 模型采用 adaptive thinking + output_config.effort；
+    /// 3.7 / 4.5 及更早支持思考的模型采用 budget-based thinking（type: "enabled", budget_tokens）。
+    /// </summary>
+    private void ConfigureThinking(AnthropicMessageRequest req, ChatCompletionRequest request)
+    {
+        var rawEffort = request.ReasoningEffort?.Trim().ToLowerInvariant();
+        var model = req.Model.ToLowerInvariant();
+        var hasThinkingSuffix = model.EndsWith("-thinking");
+
+        // 若模型显式以 -thinking 结尾，且未指定 effort 或为 off，则默认开启中等思考
+        if (hasThinkingSuffix && (string.IsNullOrEmpty(rawEffort) || rawEffort is "off" or "none"))
+        {
+            rawEffort = "medium";
+        }
+
+        // 关闭思考
+        if (string.IsNullOrEmpty(rawEffort) || rawEffort is "off" or "none")
+        {
+            return;
+        }
+
+        // 归一化 effort（OpenAI / DSH 常见值：minimal, low, medium, high, xhigh, max）
+        var effort = rawEffort switch
+        {
+            "minimal" or "low" => "low",
+            "medium" => "medium",
+            "high" => "high",
+            "xhigh" or "max" => "max",
+            _ => rawEffort
+        };
+
+        var isAdaptive = IsAdaptiveThinkingModel(model);
+
+        if (isAdaptive)
+        {
+            req.Thinking = new AnthropicThinkingConfig
+            {
+                Type = "adaptive"
+            };
+            req.OutputConfig = new AnthropicOutputConfig
+            {
+                Effort = effort
+            };
+
+            // 自适应思考下确保 max_tokens 留有足够思考和回复空间
+            if (req.MaxTokens < 4096)
+            {
+                req.MaxTokens = 4096;
+            }
+        }
+        else
+        {
+            // 基于 token 预算的思考模式（Claude 3.7 / 4.5 等）
+            var budget = request.ThinkingBudget ?? request.ThinkingBudgetTokens ?? effort switch
+            {
+                "low" => 2048,
+                "medium" => 8192,
+                "high" => 16384,
+                "max" => 32768,
+                _ => 8192
+            };
+
+            budget = Math.Max(1024, budget);
+
+            req.Thinking = new AnthropicThinkingConfig
+            {
+                Type = "enabled",
+                BudgetTokens = budget
+            };
+
+            // Anthropic 要求 max_tokens 必须严格大于 budget_tokens
+            if (req.MaxTokens <= budget)
+            {
+                req.MaxTokens = budget + Math.Max(2048, _settings.DefaultMaxTokens);
+            }
+        }
+    }
+
+    /// <summary>判断模型是否支持自适应思考（Claude 4.6+ / 5.x / fable / opus-4-6+）。</summary>
+    private static bool IsAdaptiveThinkingModel(string model)
+    {
+        var m = model.ToLowerInvariant();
+        if (m.Contains("fable-5") || m.Contains("opus-5") || m.Contains("sonnet-5") || m.Contains("haiku-5"))
+            return true;
+        if (m.Contains("opus-4-6") || m.Contains("opus-4-7") || m.Contains("opus-4-8") || m.Contains("sonnet-4-6"))
+            return true;
+        if (m.Contains("-5-") || m.Contains("-5."))
+            return true;
+        return false;
     }
 
     /// <summary>用户消息内容：纯文本 / 多部件 text + image_url（data URI 或 URL 下载转 base64）。</summary>
