@@ -41,6 +41,7 @@ public sealed class AnthropicRequestBuilder
             switch (msg.Role)
             {
                 case "system":
+                case "developer":
                     var sys = msg.ContentString;
                     if (!string.IsNullOrWhiteSpace(sys)) systemTexts.Add(sys);
                     break;

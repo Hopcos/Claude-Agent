@@ -45,6 +45,27 @@ public class AnthropicRequestBuilderTests
     }
 
     [Fact]
+    public void Build_DeveloperMessages_MergeIntoTopLevelSystem()
+    {
+        var builder = CreateBuilder();
+        var req = builder.Build(new ChatCompletionRequest
+        {
+            Messages = new List<ChatMessage>
+            {
+                Msg("developer", "You are an AI assistant."),
+                Msg("user", "Hello"),
+                Msg("developer", "Be concise.")
+            }
+        });
+
+        var sys = Assert.IsType<JsonElement>(req.System);
+        Assert.Equal(2, sys.GetArrayLength());
+        Assert.Equal("You are an AI assistant.\n\nBe concise.", sys[1].GetProperty("text").GetString());
+        Assert.Single(req.Messages);
+        Assert.Equal("user", req.Messages[0].Role);
+    }
+
+    [Fact]
     public void Build_AssistantToolCalls_MapToToolUseBlocks()
     {
         var builder = CreateBuilder();
