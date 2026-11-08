@@ -162,17 +162,81 @@ public sealed class ClaudeAccountService
             ["scope"] = creds.Scopes
         });
 
-        using var resp = await _http.PostAsync(tokenEndpoint, body, ct);
-        var respBody = await resp.Content.ReadAsStringAsync(ct);
+        var (status, respBody) = await PostRefreshAsync(tokenEndpoint, creds, ct);
 
-        if (!resp.IsSuccessStatusCode)
+        // 环境变量 CLAUDE_REFRESH_TOKEN 与网关状态文件可能各自保存了不同的 refresh token（轮换后状态文件更新、env 仍是旧值）。
+        // 当前来源 invalid_grant 时，切换到另一来源的 token 重试一次，避免因来源优先级被旧 token 永久卡死。
+        if (!IsSuccess(status) && respBody.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase))
+        {
+            var alternate = FindAlternateRefreshCredentials(creds);
+            if (alternate is not null)
+            {
+                _log.LogWarning("Refresh with {Source} token returned invalid_grant; retrying with {AltSource} token",
+                    creds.Source, alternate.Source);
+                creds = alternate;
+                _creds = creds;
+                (status, respBody) = await PostRefreshAsync(tokenEndpoint, creds, ct);
+            }
+        }
+
+        if (!IsSuccess(status))
         {
             var hint = respBody.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
                 ? "Claude Code refresh token 已失效或被吊销，请在 Claude Code 中重新登录（claude auth login）"
                 : "请检查 Claude Code 凭据配置";
-            throw new TokenRefreshException($"Token refresh failed ({(int)resp.StatusCode}): {hint}. {Truncate(respBody, 300)}");
+            throw new TokenRefreshException($"Token refresh failed ({status}): {hint}. {Truncate(respBody, 300)}");
         }
 
+        return ApplyRefreshResponse(creds, respBody);
+    }
+
+    private static bool IsSuccess(int status) => status is >= 200 and < 300;
+
+    private async Task<(int Status, string Body)> PostRefreshAsync(string tokenEndpoint, ResolvedCredentials creds, CancellationToken ct)
+    {
+        // 注意：Anthropic 的 OAuth token 端点只接受 application/x-www-form-urlencoded，JSON 会被拒绝(400 Invalid request format)。
+        using var body = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "refresh_token",
+            ["refresh_token"] = creds.RefreshToken,
+            ["client_id"] = creds.ClientId,
+            ["scope"] = creds.Scopes
+        });
+        using var resp = await _http.PostAsync(tokenEndpoint, body, ct);
+        var text = await resp.Content.ReadAsStringAsync(ct);
+        return ((int)resp.StatusCode, text);
+    }
+
+    /// <summary>返回另一来源（env ↔ 状态文件）中、与当前不同的 refresh token；没有则返回 null。</summary>
+    private ResolvedCredentials? FindAlternateRefreshCredentials(ResolvedCredentials current)
+    {
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_auth.RefreshToken)) candidates.Add(_auth.RefreshToken.Trim());
+
+        var statePath = string.IsNullOrWhiteSpace(_auth.StateFile)
+            ? Path.Combine(UserHomeDirectory(), ".claude", StateFileName)
+            : ExpandPath(_auth.StateFile!);
+        if (File.Exists(statePath))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(statePath));
+                if (doc.RootElement.TryGetProperty("refresh_token", out var r) && r.GetString() is { Length: > 0 } rt)
+                    candidates.Add(rt);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Failed to read gateway state file for refresh-token fallback");
+            }
+        }
+
+        var alt = candidates.FirstOrDefault(c => !string.Equals(c, current.RefreshToken, StringComparison.Ordinal));
+        return alt is null ? null : current with { RefreshToken = alt, Source = "Fallback" };
+    }
+
+    /// <summary>解析成功的刷新响应，更新内存缓存并持久化。</summary>
+    private AccessToken ApplyRefreshResponse(ResolvedCredentials creds, string respBody)
+    {
         using var doc = JsonDocument.Parse(respBody);
         var root = doc.RootElement;
         var access = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
@@ -201,6 +265,8 @@ public sealed class ClaudeAccountService
         }
 
         creds = creds with { AccessToken = access, Scopes = scope };
+        // 关键：必须同步更新内存中的凭据缓存，否则下一次刷新仍会使用已被轮换作废的旧 refresh token（invalid_grant）。
+        _creds = creds;
         PersistCredentials(creds, DateTimeOffset.UtcNow.AddSeconds(expiresIn));
 
         _log.LogInformation("Claude Code token refreshed successfully (valid ~{Ttl}s, until {Exp:yyyy-MM-dd HH:mm:ss})",

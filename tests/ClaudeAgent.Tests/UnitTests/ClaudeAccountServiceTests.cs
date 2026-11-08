@@ -110,6 +110,37 @@ public class ClaudeAccountServiceTests
     }
 
     [Fact]
+    public async Task Refresh_RotatedToken_SecondRefreshUsesNewRefreshToken()
+    {
+        // 回归测试：轮换后内存凭据必须更新，否则第二次刷新会用已作废的旧 refresh token
+        var path = WriteCredentialsFile("sk-ant-oat01-old", "sk-ant-ort01-r0",
+            DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds());
+        var auth = new AuthOptions { CredentialsFile = path, TokenEndpoint = "https://fake.local/oauth/token" };
+
+        var handler = new FakeOAuthHandler(req =>
+        {
+            var form = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            // 只有 r1 有效（模拟 Anthropic 的 refresh token 轮换）
+            if (form.Contains("refresh_token=sk-ant-ort01-r0"))
+                return OAuthOk("sk-ant-oat01-first", rotatedRefreshToken: "sk-ant-ort01-r1");
+            if (form.Contains("refresh_token=sk-ant-ort01-r1"))
+                return OAuthOk("sk-ant-oat01-second");
+            return new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("{\"error\":\"invalid_grant\"}")
+            };
+        });
+        var svc = new ClaudeAccountService(auth, writeBack: false, SilentLogger<ClaudeAccountService>(), handler);
+
+        var first = await svc.GetTokenAsync(ct: CancellationToken.None);
+        Assert.Equal("sk-ant-oat01-first", first.Value);
+
+        var second = await svc.ForceRefreshAsync(CancellationToken.None);
+        Assert.Equal("sk-ant-oat01-second", second.Value);
+        Assert.Equal(2, handler.PostCount);
+    }
+
+    [Fact]
     public async Task Refresh_InvalidGrant_ThrowsTokenRefreshException()
     {
         var path = WriteCredentialsFile("sk-ant-oat01-old", "sk-ant-ort01-dead",
